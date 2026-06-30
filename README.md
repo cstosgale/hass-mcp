@@ -30,6 +30,7 @@ Hass-MCP enables AI assistants like Claude to interact directly with your Home A
 - **Automation Support**: List and control automations
 - **Guided Conversations**: Use prompts for common tasks like creating automations
 - **Smart Search**: Find entities by name, type, or state
+- **Live Dashboard Editing**: Read and edit Lovelace dashboards (cards and views) over Home Assistant's WebSocket API — changes appear instantly in open browsers, with automatic backups and a dry-run preview
 - **Token Efficiency**: Lean JSON responses to minimize token usage
 
 ## Installation
@@ -261,6 +262,39 @@ Hass-MCP provides several tools for interacting with Home Assistant:
   `level` / `integration` / `search_term` / `lines` filters applied
   server-side so noisy logs don't blow Claude's context
 - `get_entities_by_area`: List entities in a specific area / room
+
+### Dashboard (Lovelace) Editing
+
+Read and live-edit dashboards over Home Assistant's WebSocket API. Saving
+pushes the change to every open browser instantly — no restart.
+
+- `list_dashboards`: List dashboards (the default plus any user dashboards),
+  each with its `url_path` and `mode` (`storage` / `yaml`)
+- `get_dashboard_config`: Get a dashboard's full config
+- `set_dashboard_config`: Replace a dashboard's full config (low-level)
+- `add_card` / `update_card` / `remove_card` / `move_card`: Edit cards within
+  a view (the view is selected by index, or by its `path` / `title`)
+- `add_view` / `remove_view` / `update_view`: Edit a dashboard's views
+- `list_dashboard_backups` / `restore_dashboard`: List and roll back to the
+  automatic pre-save backups
+
+Every editing tool accepts `dry_run=true` to preview the resulting config and
+a change summary without saving.
+
+**Important notes:**
+
+- **Admin token required.** Saving Lovelace config requires the long-lived
+  token to belong to an admin user.
+- **Storage-mode only.** Only UI-managed ("storage") dashboards can be edited.
+  YAML-mode dashboards are detected and rejected with a clear message — edit
+  their YAML files directly instead.
+- **Whole-config writes.** Home Assistant has no partial-edit API; every change
+  is a read-modify-write of the entire dashboard. The high-level card/view
+  tools handle this for you.
+- **Automatic backups.** Before each write, the current config is saved to
+  `HASS_MCP_BACKUP_DIR` (default `~/.hass-mcp/dashboard-backups/`). When running
+  in **Docker**, mount a volume at this path or backups are lost when the
+  container is recreated.
 
 ## Prompts for Guided Conversations
 

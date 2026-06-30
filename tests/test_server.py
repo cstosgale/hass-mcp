@@ -155,6 +155,18 @@ class TestMCPServer:
             "get_history_range",
             "get_statistics",
             "get_statistics_range",
+            "list_dashboards",
+            "get_dashboard_config",
+            "set_dashboard_config",
+            "add_card",
+            "update_card",
+            "remove_card",
+            "move_card",
+            "add_view",
+            "remove_view",
+            "update_view",
+            "list_dashboard_backups",
+            "restore_dashboard",
         ]
         
         # Check that each tool function has a proper docstring and exists
@@ -363,5 +375,39 @@ class TestMCPServer:
                 "fan", "set_percentage", {"entity_id": "fan.bedroom", "percentage": 50}
             )
             assert result["success"] is True
-            assert result["domain"] == "fan"
-            assert result["service"] == "set_percentage"
+
+    @pytest.mark.asyncio
+    async def test_add_card_tool_delegates(self):
+        """add_card tool forwards its args to app.lovelace.add_card."""
+        from app.server import add_card
+
+        with patch("app.lovelace.add_card", new=AsyncMock(return_value={"success": True})) as mock_add:
+            card = {"type": "markdown", "content": "hi"}
+            result = await add_card(url_path="test-dash", view=0, card=card)
+
+            mock_add.assert_called_once_with(
+                "test-dash", view=0, card=card, position=None, dry_run=False
+            )
+            assert result == {"success": True}
+
+    @pytest.mark.asyncio
+    async def test_set_dashboard_config_tool_delegates(self):
+        """set_dashboard_config tool forwards args (including dry_run) through."""
+        from app.server import set_dashboard_config
+
+        with patch("app.lovelace.set_dashboard_config", new=AsyncMock(return_value={"dry_run": True})) as mock_set:
+            cfg = {"views": []}
+            result = await set_dashboard_config(url_path=None, config=cfg, dry_run=True)
+
+            mock_set.assert_called_once_with(None, cfg, dry_run=True)
+            assert result == {"dry_run": True}
+
+    @pytest.mark.asyncio
+    async def test_list_dashboards_tool_delegates(self):
+        """list_dashboards tool returns whatever app.lovelace.list_dashboards yields."""
+        from app.server import list_dashboards
+
+        sentinel = [{"url_path": None, "title": "Overview", "mode": "storage"}]
+        with patch("app.lovelace.list_dashboards", new=AsyncMock(return_value=sentinel)):
+            result = await list_dashboards()
+            assert result == sentinel

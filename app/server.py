@@ -2,7 +2,7 @@ import functools
 import logging
 import json
 import httpx
-from typing import List, Dict, Any, Optional, Callable, Awaitable, TypeVar, cast
+from typing import List, Dict, Any, Optional, Callable, Awaitable, TypeVar, Union, cast
 
 # Set up logging
 logging.basicConfig(
@@ -21,6 +21,7 @@ from app.hass import (
     get_hass_error_log, get_entity_history, get_entity_history_range,
     get_entity_statistics, get_entity_statistics_range,
 )
+from app import lovelace
 
 # Type variable for generic functions
 T = TypeVar('T')
@@ -969,6 +970,277 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
         "service": service,
         "affected_entities": affected_entities,
     }
+
+# ---------------------------------------------------------------------------
+# Dashboard (Lovelace) editing
+#
+# Home Assistant manages dashboards over its WebSocket API; a save pushes the
+# change live to every open browser. Edits are always whole-config
+# read-modify-write (HA has no partial-edit API). Writes require an ADMIN
+# token, only work on storage-mode (UI-managed) dashboards, and back up the
+# prior config before overwriting (see restore_dashboard).
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+@async_handler("list_dashboards")
+async def list_dashboards() -> List[Dict[str, Any]]:
+    """
+    List Home Assistant dashboards (Lovelace)
+
+    Returns:
+        A list of dashboards. Each entry has `url_path` (None for the default
+        "Overview" dashboard), `title`, and `mode` ("storage" or "yaml"). Only
+        "storage"-mode dashboards can be edited via these tools.
+    """
+    return await lovelace.list_dashboards()
+
+@mcp.tool()
+@async_handler("get_dashboard_config")
+async def get_dashboard_config(url_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Get a dashboard's full configuration
+
+    Args:
+        url_path: The dashboard's URL path (e.g. "my-dash"). Omit or pass None
+                  for the default "Overview" dashboard.
+
+    Returns:
+        The dashboard config dict (a top-level `views` list of cards). If the
+        dashboard has no stored config yet, returns an empty `{"views": []}`
+        scaffold with a `note`.
+    """
+    return await lovelace.get_dashboard_config(url_path)
+
+@mcp.tool()
+@async_handler("set_dashboard_config")
+async def set_dashboard_config(
+    url_path: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Replace a dashboard's full configuration (low-level write)
+
+    ⚠️ WARNING: Overwrites the ENTIRE dashboard and updates every open browser
+    live. The prior config is backed up first (use restore_dashboard to undo).
+    Requires an admin token; only storage-mode dashboards can be saved.
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        config: The complete new config dict (must contain a `views` list).
+        dry_run: If True, validate and return the resulting config + a change
+                 summary WITHOUT saving.
+
+    Returns:
+        On save: {success, url_path, backup_id, summary}. On dry_run:
+        {dry_run: True, url_path, summary, config}.
+    """
+    return await lovelace.set_dashboard_config(url_path, config, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("add_card")
+async def add_card(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+    card: Optional[Dict[str, Any]] = None,
+    position: Optional[int] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Add a card to a dashboard view (live)
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view — an integer index, or a string matching the view's
+              `path` or `title`.
+        card: The card config dict (must include a string `type`), e.g.
+              {"type": "markdown", "content": "Hello"}.
+        position: Insert index within the view's cards (default: append).
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.add_card(url_path, view=view, card=card, position=position, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("update_card")
+async def update_card(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+    card_index: int = 0,
+    card: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Replace a card in a dashboard view (live)
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view (index, or matching `path`/`title`).
+        card_index: Index of the card to replace within that view.
+        card: The new card config dict (must include a string `type`).
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.update_card(url_path, view=view, card_index=card_index, card=card, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("remove_card")
+async def remove_card(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+    card_index: int = 0,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Remove a card from a dashboard view (live)
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view (index, or matching `path`/`title`).
+        card_index: Index of the card to remove within that view.
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.remove_card(url_path, view=view, card_index=card_index, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("move_card")
+async def move_card(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+    card_index: int = 0,
+    new_index: int = 0,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Reorder a card within a dashboard view (live)
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view (index, or matching `path`/`title`).
+        card_index: Current index of the card.
+        new_index: Destination index within the same view.
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.move_card(url_path, view=view, card_index=card_index, new_index=new_index, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("add_view")
+async def add_view(
+    url_path: Optional[str] = None,
+    view_config: Optional[Dict[str, Any]] = None,
+    position: Optional[int] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Add a new view to a dashboard (live)
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view_config: The view config dict, e.g. {"title": "Garage", "path": "garage"}.
+        position: Insert index among views (default: append).
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.add_view(url_path, view_config=view_config, position=position, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("remove_view")
+async def remove_view(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Remove a view from a dashboard (live)
+
+    ⚠️ Removes the view and all its cards.
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view (index, or matching `path`/`title`).
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.remove_view(url_path, view=view, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("update_view")
+async def update_view(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+    changes: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Update a view's properties — title, path, icon, etc. (live)
+
+    Cards in the view are preserved unless `changes` includes a `cards` key.
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view (index, or matching `path`/`title`).
+        changes: Dict of view properties to merge in, e.g. {"title": "New Title"}.
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result with a `backup_id`, or a dry-run preview.
+    """
+    return await lovelace.update_view(url_path, view=view, changes=changes, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("list_dashboard_backups")
+async def list_dashboard_backups(url_path: Optional[str] = None) -> List[Dict[str, str]]:
+    """
+    List on-disk backups of a dashboard's config
+
+    Backups are written automatically before every dashboard write. NOTE: in
+    Docker, backups persist only if HASS_MCP_BACKUP_DIR is volume-mounted.
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+
+    Returns:
+        A list of {backup_id, path}, oldest first.
+    """
+    return lovelace.list_dashboard_backups(url_path)
+
+@mcp.tool()
+@async_handler("restore_dashboard")
+async def restore_dashboard(
+    url_path: Optional[str] = None,
+    backup_id: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Restore a dashboard from a backup (live)
+
+    Restores the most recent backup unless `backup_id` is given. The current
+    config is itself backed up first, so a restore can be undone.
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        backup_id: A specific backup id from list_dashboard_backups (default:
+                   newest).
+        dry_run: Preview without saving.
+
+    Returns:
+        Save result plus `restored_from`, or a dry-run preview.
+    """
+    return await lovelace.restore_dashboard(url_path, backup_id=backup_id, dry_run=dry_run)
 
 # Prompt functionality
 @mcp.prompt()
