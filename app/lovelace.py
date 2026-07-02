@@ -56,6 +56,22 @@ def _label(url_path: Optional[str]) -> str:
     return f"'{url_path}'" if url_path else "(default)"
 
 
+def _as_int_or_none(value: Any) -> Optional[int]:
+    """Interpret a value as an int index, or None. Accepts real ints and
+    integer-valued strings like "0" — MCP clients often stringify numeric
+    arguments to a Union[int, str] parameter."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _is_config_not_found(err: Exception) -> bool:
     s = str(err).lower()
     return any(k in s for k in ("config_not_found", "no config found", "unknown config"))
@@ -144,6 +160,14 @@ def _resolve_view(cfg: Dict[str, Any], view: ViewSelector) -> int:
         for i, v in enumerate(views):
             if v.get("path") == view or v.get("title") == view:
                 return i
+        # No name match — a numeric string (e.g. "0") is an index.
+        n = _as_int_or_none(view)
+        if n is not None:
+            if n < 0 or n >= len(views):
+                raise LovelaceError(
+                    f"View index {n} out of range (have {len(views)} view(s))."
+                )
+            return n
         available = [
             f"{i}:{v.get('title') or v.get('path') or '?'}" for i, v in enumerate(views)
         ]
@@ -203,6 +227,14 @@ def _resolve_section(view: Dict[str, Any], section: SectionSelector) -> int:
         for i, s in enumerate(sections):
             if s.get("title") == section or _section_heading(s) == section:
                 return i
+        # No title/heading match — a numeric string (e.g. "0") is an index.
+        n = _as_int_or_none(section)
+        if n is not None:
+            if n < 0 or n >= len(sections):
+                raise LovelaceError(
+                    f"section index {n} out of range (have {len(sections)} section(s))."
+                )
+            return n
         raise LovelaceError(
             f"Section {section!r} not found. Available sections: {_section_labels(sections)}"
         )

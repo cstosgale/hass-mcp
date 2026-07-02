@@ -313,6 +313,28 @@ async def test_section_index_out_of_range(fake_ws):
         await lovelace.add_card(None, view=0, card={"type": "x"}, section=9)
 
 
+async def test_section_as_numeric_string_is_index(fake_ws):
+    """MCP clients may stringify a numeric section arg — "0" must mean index 0."""
+    fake_ws.config_store[None] = _sections_view_config()
+    await lovelace.add_card(None, view=0, card={"type": "x"}, section="0")
+    _, saved = fake_ws.saved[-1]
+    assert saved["views"][0]["sections"][0]["cards"][-1]["type"] == "x"
+
+
+async def test_section_numeric_string_out_of_range(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    with pytest.raises(LovelaceError, match="section index .* out of range"):
+        await lovelace.add_card(None, view=0, card={"type": "x"}, section="9")
+
+
+async def test_view_as_numeric_string_is_index(fake_ws):
+    """Same coercion for the `view` selector: "1" means index 1."""
+    fake_ws.config_store[None] = {"views": [{"title": "A"}, {"title": "B", "cards": []}]}
+    await lovelace.add_card(None, view="1", card={"type": "x"})
+    _, saved = fake_ws.saved[-1]
+    assert saved["views"][1]["cards"][-1]["type"] == "x"
+
+
 async def test_section_on_classic_view_is_rejected(fake_ws):
     """Passing section to a non-sections view is an error, not silently ignored."""
     fake_ws.config_store[None] = {"views": [{"title": "Home", "cards": []}]}
