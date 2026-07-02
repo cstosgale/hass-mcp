@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 # string matched against each view's `path` or `title`.
 ViewSelector = Union[int, str]
 
+# A `section` argument that selects a section inside a "sections"-type view:
+# an integer index, or a string matched against the section's `title` or its
+# first heading card's `heading`.
+SectionSelector = Union[int, str]
+
 
 class LovelaceError(Exception):
     """Raised for dashboard edits that fail validation or HA constraints.
@@ -102,6 +107,22 @@ def _validate_config(cfg: Any) -> None:
                 raise LovelaceError(f"views[{vi}].cards must be a list.")
             for ci, card in enumerate(cards):
                 _validate_card(card, f"views[{vi}].cards[{ci}]")
+        # "sections"-type views hold their cards inside sections[].cards.
+        sections = view.get("sections")
+        if sections is not None:
+            if not isinstance(sections, list):
+                raise LovelaceError(f"views[{vi}].sections must be a list.")
+            for si, section in enumerate(sections):
+                if not isinstance(section, dict):
+                    raise LovelaceError(f"views[{vi}].sections[{si}] must be a dict.")
+                scards = section.get("cards")
+                if scards is not None:
+                    if not isinstance(scards, list):
+                        raise LovelaceError(
+                            f"views[{vi}].sections[{si}].cards must be a list."
+                        )
+                    for ci, card in enumerate(scards):
+                        _validate_card(card, f"views[{vi}].sections[{si}].cards[{ci}]")
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +157,84 @@ def _check_card_index(cards: List[Any], idx: int, view_idx: int) -> None:
             f"card_index {idx} out of range for view {view_idx} "
             f"(have {len(cards)} card(s))."
         )
+
+
+# ---------------------------------------------------------------------------
+# Sections-view support
+#
+# Home Assistant's modern "sections" view type renders cards from
+# view["sections"][n]["cards"], NOT the top-level view["cards"] (which it
+# ignores). Card operations must target a section on these views, or the edit
+# would save successfully yet never render — a silent failure. `_resolve_card_list`
+# is the single place that decides which list a card op mutates.
+# ---------------------------------------------------------------------------
+
+def _is_sections_view(view: Dict[str, Any]) -> bool:
+    return view.get("type") == "sections" or isinstance(view.get("sections"), list)
+
+
+def _section_heading(section: Dict[str, Any]) -> Optional[str]:
+    """The heading text of a section's first `heading` card, if any."""
+    for card in section.get("cards", []) or []:
+        if isinstance(card, dict) and card.get("type") == "heading":
+            return card.get("heading")
+    return None
+
+
+def _section_labels(sections: List[Dict[str, Any]]) -> List[str]:
+    return [
+        f"{i}:{s.get('title') or _section_heading(s) or '?'}"
+        for i, s in enumerate(sections)
+    ]
+
+
+def _resolve_section(view: Dict[str, Any], section: SectionSelector) -> int:
+    """Return the index of the section selected by `section` (index/title/heading)."""
+    sections = view.get("sections", []) or []
+    if isinstance(section, bool):  # bool is an int subclass — reject explicitly
+        raise LovelaceError("section must be an int index or a string title/heading.")
+    if isinstance(section, int):
+        if section < 0 or section >= len(sections):
+            raise LovelaceError(
+                f"section index {section} out of range (have {len(sections)} section(s))."
+            )
+        return section
+    if isinstance(section, str):
+        for i, s in enumerate(sections):
+            if s.get("title") == section or _section_heading(s) == section:
+                return i
+        raise LovelaceError(
+            f"Section {section!r} not found. Available sections: {_section_labels(sections)}"
+        )
+    raise LovelaceError("section must be an int index or a string title/heading.")
+
+
+def _resolve_card_list(
+    view: Dict[str, Any], section: Optional[SectionSelector], view_idx: int
+) -> List[Any]:
+    """Return the mutable cards list a card op should operate on.
+
+    For a "sections" view, `section` is required (otherwise the edit would
+    write where HA renders nothing); returns that section's `cards`. For a
+    classic view, `section` must be omitted; returns the view's `cards`.
+    The returned list is attached to the config, so mutating it in place edits
+    the config."""
+    if _is_sections_view(view):
+        if section is None:
+            sections = view.get("sections", []) or []
+            raise LovelaceError(
+                f"View {view_idx} is a 'sections' view — pass `section` (index, "
+                f"title, or heading) to say which section to edit. "
+                f"Available sections: {_section_labels(sections)}"
+            )
+        view.setdefault("sections", [])
+        si = _resolve_section(view, section)
+        return view["sections"][si].setdefault("cards", [])
+    if section is not None:
+        raise LovelaceError(
+            f"View {view_idx} is not a 'sections' view; omit `section`."
+        )
+    return view.setdefault("cards", [])
 
 
 # ---------------------------------------------------------------------------
@@ -307,15 +406,19 @@ async def add_card(
     view: ViewSelector = 0,
     card: Optional[Dict[str, Any]] = None,
     position: Optional[int] = None,
+    section: Optional[SectionSelector] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Add a card to a view. `position` inserts at that index (default: end)."""
+    """Add a card to a view. `position` inserts at that index (default: end).
+
+    For a "sections" view, pass `section` (index, title, or heading) to choose
+    which section the card goes in."""
     if card is None:
         raise LovelaceError("card is required.")
     _validate_card(card, "card")
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
-    cards = cfg["views"][vi].setdefault("cards", [])
+    cards = _resolve_card_list(cfg["views"][vi], section, vi)
     idx = len(cards) if position is None else max(0, min(position, len(cards)))
     cards.insert(idx, card)
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
@@ -326,18 +429,18 @@ async def update_card(
     view: ViewSelector = 0,
     card_index: int = 0,
     card: Optional[Dict[str, Any]] = None,
+    section: Optional[SectionSelector] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Replace the card at `card_index` in `view` with `card`."""
+    """Replace the card at `card_index` in `view` (or its `section`) with `card`."""
     if card is None:
         raise LovelaceError("card is required.")
     _validate_card(card, "card")
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
-    cards = cfg["views"][vi].get("cards", []) or []
+    cards = _resolve_card_list(cfg["views"][vi], section, vi)
     _check_card_index(cards, card_index, vi)
     cards[card_index] = card
-    cfg["views"][vi]["cards"] = cards
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
 
 
@@ -345,15 +448,15 @@ async def remove_card(
     url_path: Optional[str] = None,
     view: ViewSelector = 0,
     card_index: int = 0,
+    section: Optional[SectionSelector] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Remove the card at `card_index` from `view`."""
+    """Remove the card at `card_index` from `view` (or its `section`)."""
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
-    cards = cfg["views"][vi].get("cards", []) or []
+    cards = _resolve_card_list(cfg["views"][vi], section, vi)
     _check_card_index(cards, card_index, vi)
     cards.pop(card_index)
-    cfg["views"][vi]["cards"] = cards
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
 
 
@@ -362,12 +465,13 @@ async def move_card(
     view: ViewSelector = 0,
     card_index: int = 0,
     new_index: int = 0,
+    section: Optional[SectionSelector] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Reorder a card within a view, moving it from `card_index` to `new_index`."""
+    """Reorder a card within a view (or its `section`): `card_index` -> `new_index`."""
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
-    cards = cfg["views"][vi].get("cards", []) or []
+    cards = _resolve_card_list(cfg["views"][vi], section, vi)
     _check_card_index(cards, card_index, vi)
     if not isinstance(new_index, int) or isinstance(new_index, bool) or new_index < 0 or new_index >= len(cards):
         raise LovelaceError(
@@ -375,8 +479,34 @@ async def move_card(
         )
     card = cards.pop(card_index)
     cards.insert(new_index, card)
-    cfg["views"][vi]["cards"] = cards
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
+
+
+async def list_view_sections(
+    url_path: Optional[str] = None,
+    view: ViewSelector = 0,
+) -> List[Dict[str, Any]]:
+    """List the sections of a "sections"-type view, so card ops can target one.
+
+    Returns one entry per section with its `index`, `title`, first `heading`,
+    and `card_count`. Raises if the view isn't a sections view."""
+    cfg = await get_dashboard_config(url_path)
+    vi = _resolve_view(cfg, view)
+    view_obj = cfg["views"][vi]
+    if not _is_sections_view(view_obj):
+        raise LovelaceError(
+            f"View {vi} is not a 'sections' view — it has no sections to list."
+        )
+    sections = view_obj.get("sections", []) or []
+    return [
+        {
+            "index": i,
+            "title": s.get("title"),
+            "heading": _section_heading(s),
+            "card_count": len(s.get("cards", []) or []),
+        }
+        for i, s in enumerate(sections)
+    ]
 
 
 async def add_view(

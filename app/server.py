@@ -1044,6 +1044,7 @@ async def add_card(
     view: Union[int, str] = 0,
     card: Optional[Dict[str, Any]] = None,
     position: Optional[int] = None,
+    section: Optional[Union[int, str]] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1055,13 +1056,17 @@ async def add_card(
               `path` or `title`.
         card: The card config dict (must include a string `type`), e.g.
               {"type": "markdown", "content": "Hello"}.
-        position: Insert index within the view's cards (default: append).
+        position: Insert index within the target card list (default: append).
+        section: For a "sections"-type view, which section to add into — an
+                 index, section title, or heading text. REQUIRED for sections
+                 views (use list_view_sections to see them); omit for classic
+                 views.
         dry_run: Preview without saving.
 
     Returns:
         Save result with a `backup_id`, or a dry-run preview.
     """
-    return await lovelace.add_card(url_path, view=view, card=card, position=position, dry_run=dry_run)
+    return await lovelace.add_card(url_path, view=view, card=card, position=position, section=section, dry_run=dry_run)
 
 @mcp.tool()
 @async_handler("update_card")
@@ -1070,6 +1075,7 @@ async def update_card(
     view: Union[int, str] = 0,
     card_index: int = 0,
     card: Optional[Dict[str, Any]] = None,
+    section: Optional[Union[int, str]] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1078,14 +1084,16 @@ async def update_card(
     Args:
         url_path: Dashboard URL path, or None for the default dashboard.
         view: Target view (index, or matching `path`/`title`).
-        card_index: Index of the card to replace within that view.
+        card_index: Index of the card to replace within the target card list.
         card: The new card config dict (must include a string `type`).
+        section: For a "sections"-type view, which section the card is in
+                 (index/title/heading). Required for sections views.
         dry_run: Preview without saving.
 
     Returns:
         Save result with a `backup_id`, or a dry-run preview.
     """
-    return await lovelace.update_card(url_path, view=view, card_index=card_index, card=card, dry_run=dry_run)
+    return await lovelace.update_card(url_path, view=view, card_index=card_index, card=card, section=section, dry_run=dry_run)
 
 @mcp.tool()
 @async_handler("remove_card")
@@ -1093,6 +1101,7 @@ async def remove_card(
     url_path: Optional[str] = None,
     view: Union[int, str] = 0,
     card_index: int = 0,
+    section: Optional[Union[int, str]] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1101,13 +1110,15 @@ async def remove_card(
     Args:
         url_path: Dashboard URL path, or None for the default dashboard.
         view: Target view (index, or matching `path`/`title`).
-        card_index: Index of the card to remove within that view.
+        card_index: Index of the card to remove within the target card list.
+        section: For a "sections"-type view, which section the card is in
+                 (index/title/heading). Required for sections views.
         dry_run: Preview without saving.
 
     Returns:
         Save result with a `backup_id`, or a dry-run preview.
     """
-    return await lovelace.remove_card(url_path, view=view, card_index=card_index, dry_run=dry_run)
+    return await lovelace.remove_card(url_path, view=view, card_index=card_index, section=section, dry_run=dry_run)
 
 @mcp.tool()
 @async_handler("move_card")
@@ -1116,6 +1127,7 @@ async def move_card(
     view: Union[int, str] = 0,
     card_index: int = 0,
     new_index: int = 0,
+    section: Optional[Union[int, str]] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1125,13 +1137,38 @@ async def move_card(
         url_path: Dashboard URL path, or None for the default dashboard.
         view: Target view (index, or matching `path`/`title`).
         card_index: Current index of the card.
-        new_index: Destination index within the same view.
+        new_index: Destination index within the same card list.
+        section: For a "sections"-type view, which section the card is in
+                 (index/title/heading). Required for sections views.
         dry_run: Preview without saving.
 
     Returns:
         Save result with a `backup_id`, or a dry-run preview.
     """
-    return await lovelace.move_card(url_path, view=view, card_index=card_index, new_index=new_index, dry_run=dry_run)
+    return await lovelace.move_card(url_path, view=view, card_index=card_index, new_index=new_index, section=section, dry_run=dry_run)
+
+@mcp.tool()
+@async_handler("list_view_sections")
+async def list_view_sections(
+    url_path: Optional[str] = None,
+    view: Union[int, str] = 0,
+) -> List[Dict[str, Any]]:
+    """
+    List the sections of a "sections"-type dashboard view
+
+    Modern Home Assistant views of `type: sections` hold their cards inside
+    sections (not a top-level card list). Use this to discover which section
+    to target with the card tools' `section` argument.
+
+    Args:
+        url_path: Dashboard URL path, or None for the default dashboard.
+        view: Target view (index, or matching `path`/`title`).
+
+    Returns:
+        A list of {index, title, heading, card_count}, one per section. Errors
+        if the view is not a sections view.
+    """
+    return await lovelace.list_view_sections(url_path, view=view)
 
 @mcp.tool()
 @async_handler("add_view")

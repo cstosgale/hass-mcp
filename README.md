@@ -274,9 +274,17 @@ pushes the change to every open browser instantly — no restart.
 - `set_dashboard_config`: Replace a dashboard's full config (low-level)
 - `add_card` / `update_card` / `remove_card` / `move_card`: Edit cards within
   a view (the view is selected by index, or by its `path` / `title`)
+- `list_view_sections`: List the sections of a "sections"-type view
 - `add_view` / `remove_view` / `update_view`: Edit a dashboard's views
 - `list_dashboard_backups` / `restore_dashboard`: List and roll back to the
   automatic pre-save backups
+
+**Sections views:** Home Assistant's modern view type (`type: sections`) stores
+its cards inside sections rather than a single top-level list. For those views,
+call `list_view_sections` and pass the `section` argument (index, title, or
+heading) to the card tools. Card edits on a sections view without a `section`
+are rejected with the list of available sections — rather than silently saving
+a card where it would never render.
 
 Every editing tool accepts `dry_run=true` to preview the resulting config and
 a change summary without saving.

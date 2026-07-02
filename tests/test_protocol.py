@@ -88,6 +88,7 @@ EXPECTED_TOOLS = {
     "add_view",
     "remove_view",
     "update_view",
+    "list_view_sections",
     "list_dashboard_backups",
     "restore_dashboard",
 }

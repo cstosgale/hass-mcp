@@ -165,6 +165,7 @@ class TestMCPServer:
             "add_view",
             "remove_view",
             "update_view",
+            "list_view_sections",
             "list_dashboard_backups",
             "restore_dashboard",
         ]
@@ -386,7 +387,7 @@ class TestMCPServer:
             result = await add_card(url_path="test-dash", view=0, card=card)
 
             mock_add.assert_called_once_with(
-                "test-dash", view=0, card=card, position=None, dry_run=False
+                "test-dash", view=0, card=card, position=None, section=None, dry_run=False
             )
             assert result == {"success": True}
 

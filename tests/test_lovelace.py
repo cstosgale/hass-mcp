@@ -249,6 +249,122 @@ async def test_update_view_retitle_preserves_cards(fake_ws):
 
 
 # --------------------------------------------------------------------------
+# Sections-type views
+# --------------------------------------------------------------------------
+
+def _sections_view_config():
+    """A 'sections'-type view with one section containing a heading."""
+    return {
+        "views": [
+            {
+                "type": "sections",
+                "title": "Air Quality",
+                "path": "air-quality",
+                "sections": [
+                    {"type": "grid", "cards": [
+                        {"type": "heading", "heading": "Temperature"},
+                        {"type": "history-graph", "entities": ["sensor.temp"]},
+                    ]},
+                    {"type": "grid", "cards": [
+                        {"type": "heading", "heading": "Controls"},
+                    ]},
+                ],
+            }
+        ]
+    }
+
+
+async def test_add_card_to_section_by_index(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    card = {"type": "history-graph", "entities": ["sensor.humidity"]}
+    await lovelace.add_card(None, view=0, card=card, section=0)
+    _, saved = fake_ws.saved[-1]
+    # Went into sections[0].cards, NOT a top-level cards[] array.
+    assert saved["views"][0]["sections"][0]["cards"][-1] == card
+    assert "cards" not in saved["views"][0]
+
+
+async def test_add_card_to_section_by_heading(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    await lovelace.add_card(None, view=0, card={"type": "button"}, section="Controls")
+    _, saved = fake_ws.saved[-1]
+    assert saved["views"][0]["sections"][1]["cards"][-1]["type"] == "button"
+
+
+async def test_add_card_section_at_position(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    await lovelace.add_card(None, view=0, card={"type": "x"}, section=0, position=1)
+    _, saved = fake_ws.saved[-1]
+    types = [c.get("type") for c in saved["views"][0]["sections"][0]["cards"]]
+    assert types == ["heading", "x", "history-graph"]
+
+
+async def test_sections_view_without_section_is_rejected(fake_ws):
+    """The silent-failure guard: editing a sections view needs a section."""
+    fake_ws.config_store[None] = _sections_view_config()
+    with pytest.raises(LovelaceError, match="sections' view"):
+        await lovelace.add_card(None, view=0, card={"type": "x"})
+    assert fake_ws.saved == []
+
+
+async def test_section_index_out_of_range(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    with pytest.raises(LovelaceError, match="section index .* out of range"):
+        await lovelace.add_card(None, view=0, card={"type": "x"}, section=9)
+
+
+async def test_section_on_classic_view_is_rejected(fake_ws):
+    """Passing section to a non-sections view is an error, not silently ignored."""
+    fake_ws.config_store[None] = {"views": [{"title": "Home", "cards": []}]}
+    with pytest.raises(LovelaceError, match="not a 'sections' view"):
+        await lovelace.add_card(None, view=0, card={"type": "x"}, section=0)
+
+
+async def test_update_and_remove_card_in_section(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    await lovelace.update_card(None, view=0, section=0, card_index=1,
+                               card={"type": "gauge"})
+    _, saved = fake_ws.saved[-1]
+    assert saved["views"][0]["sections"][0]["cards"][1]["type"] == "gauge"
+
+    await lovelace.remove_card(None, view=0, section=0, card_index=0)
+    _, saved = fake_ws.saved[-1]
+    assert [c["type"] for c in saved["views"][0]["sections"][0]["cards"]] == ["gauge"]
+
+
+async def test_move_card_in_section(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    await lovelace.move_card(None, view=0, section=0, card_index=0, new_index=1)
+    _, saved = fake_ws.saved[-1]
+    assert [c["type"] for c in saved["views"][0]["sections"][0]["cards"]] == [
+        "history-graph", "heading",
+    ]
+
+
+async def test_list_view_sections(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    sections = await lovelace.list_view_sections(None, view=0)
+    assert sections == [
+        {"index": 0, "title": None, "heading": "Temperature", "card_count": 2},
+        {"index": 1, "title": None, "heading": "Controls", "card_count": 1},
+    ]
+
+
+async def test_list_view_sections_on_classic_view_errors(fake_ws):
+    fake_ws.config_store[None] = {"views": [{"title": "Home", "cards": []}]}
+    with pytest.raises(LovelaceError, match="not a 'sections' view"):
+        await lovelace.list_view_sections(None, view=0)
+
+
+async def test_validation_rejects_bad_card_in_section(fake_ws):
+    bad = {"views": [{"type": "sections", "sections": [
+        {"cards": [{"content": "no type"}]}
+    ]}]}
+    with pytest.raises(LovelaceError, match="type"):
+        await lovelace.set_dashboard_config(None, bad)
+
+
+# --------------------------------------------------------------------------
 # Backups: list + restore
 # --------------------------------------------------------------------------
 
