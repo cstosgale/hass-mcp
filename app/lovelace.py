@@ -78,19 +78,30 @@ def _is_config_not_found(err: Exception) -> bool:
 
 
 def _is_yaml_or_not_storage(err: Exception) -> bool:
+    # Only phrases that specifically indicate a YAML-mode / non-storage save
+    # rejection. A bare "supported" or a generic "config_not_found" would
+    # misclassify unrelated save errors and hide their real cause.
     s = str(err).lower()
-    return any(
-        k in s
-        for k in ("yaml", "not storage", "config_not_found", "unknown config", "supported")
-    )
+    return any(k in s for k in ("yaml", "not storage", "not supported"))
+
+
+def _view_card_count(view: Dict[str, Any]) -> int:
+    """Count a view's cards, whether classic (top-level `cards`) or a
+    "sections" view (cards live in `sections[].cards`)."""
+    sections = view.get("sections")
+    if isinstance(sections, list):
+        return sum(
+            len(s.get("cards", []) or []) for s in sections if isinstance(s, dict)
+        )
+    return len(view.get("cards", []) or [])
 
 
 def _summarize(cfg: Dict[str, Any]) -> Dict[str, Any]:
     views = cfg.get("views", []) or []
     return {
         "views": len(views),
-        "total_cards": sum(len(v.get("cards", []) or []) for v in views),
-        "cards_per_view": [len(v.get("cards", []) or []) for v in views],
+        "total_cards": sum(_view_card_count(v) for v in views),
+        "cards_per_view": [_view_card_count(v) for v in views],
     }
 
 
@@ -175,12 +186,24 @@ def _resolve_view(cfg: Dict[str, Any], view: ViewSelector) -> int:
     raise LovelaceError("view must be an int index or a string path/title.")
 
 
-def _check_card_index(cards: List[Any], idx: int, view_idx: int) -> None:
-    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0 or idx >= len(cards):
+def _coerce_index(value: Any, length: int, name: str) -> int:
+    """Coerce an index argument (int or numeric string — MCP clients stringify
+    numeric args) and bounds-check it against `length`. Raises LovelaceError."""
+    idx = _as_int_or_none(value)
+    if idx is None or idx < 0 or idx >= length:
         raise LovelaceError(
-            f"card_index {idx} out of range for view {view_idx} "
-            f"(have {len(cards)} card(s))."
+            f"{name} {value!r} out of range (have {length} card(s))."
         )
+    return idx
+
+
+def _coerce_position(value: Any, length: int) -> int:
+    """Coerce an insert position (int or numeric string) and clamp into
+    [0, length] — insertion tolerates out-of-range by pinning to the ends."""
+    pos = _as_int_or_none(value)
+    if pos is None:
+        raise LovelaceError(f"position must be an integer, got {value!r}.")
+    return max(0, min(pos, length))
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +264,18 @@ def _resolve_section(view: Dict[str, Any], section: SectionSelector) -> int:
     raise LovelaceError("section must be an int index or a string title/heading.")
 
 
+def _cards_of(container: Dict[str, Any]) -> List[Any]:
+    """Return `container["cards"]` as a list, attaching a fresh list when the
+    key is absent, null, or otherwise not a list. `dict.setdefault` alone
+    doesn't cover an explicit `"cards": null` (which `_validate_config`
+    permits), which would then break `.insert` / `len` on the card ops."""
+    cards = container.get("cards")
+    if not isinstance(cards, list):
+        cards = []
+        container["cards"] = cards
+    return cards
+
+
 def _resolve_card_list(
     view: Dict[str, Any], section: Optional[SectionSelector], view_idx: int
 ) -> List[Any]:
@@ -261,12 +296,12 @@ def _resolve_card_list(
             )
         view.setdefault("sections", [])
         si = _resolve_section(view, section)
-        return view["sections"][si].setdefault("cards", [])
+        return _cards_of(view["sections"][si])
     if section is not None:
         raise LovelaceError(
             f"View {view_idx} is not a 'sections' view; omit `section`."
         )
-    return view.setdefault("cards", [])
+    return _cards_of(view)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +486,7 @@ async def add_card(
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
     cards = _resolve_card_list(cfg["views"][vi], section, vi)
-    idx = len(cards) if position is None else max(0, min(position, len(cards)))
+    idx = len(cards) if position is None else _coerce_position(position, len(cards))
     cards.insert(idx, card)
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
 
@@ -471,7 +506,7 @@ async def update_card(
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
     cards = _resolve_card_list(cfg["views"][vi], section, vi)
-    _check_card_index(cards, card_index, vi)
+    card_index = _coerce_index(card_index, len(cards), "card_index")
     cards[card_index] = card
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
 
@@ -487,7 +522,7 @@ async def remove_card(
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
     cards = _resolve_card_list(cfg["views"][vi], section, vi)
-    _check_card_index(cards, card_index, vi)
+    card_index = _coerce_index(card_index, len(cards), "card_index")
     cards.pop(card_index)
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
 
@@ -504,11 +539,8 @@ async def move_card(
     cfg = await _load_for_edit(url_path)
     vi = _resolve_view(cfg, view)
     cards = _resolve_card_list(cfg["views"][vi], section, vi)
-    _check_card_index(cards, card_index, vi)
-    if not isinstance(new_index, int) or isinstance(new_index, bool) or new_index < 0 or new_index >= len(cards):
-        raise LovelaceError(
-            f"new_index {new_index} out of range (have {len(cards)} card(s))."
-        )
+    card_index = _coerce_index(card_index, len(cards), "card_index")
+    new_index = _coerce_index(new_index, len(cards), "new_index")
     card = cards.pop(card_index)
     cards.insert(new_index, card)
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
@@ -554,7 +586,7 @@ async def add_view(
         )
     cfg = await _load_for_edit(url_path)
     views = cfg["views"]
-    idx = len(views) if position is None else max(0, min(position, len(views)))
+    idx = len(views) if position is None else _coerce_position(position, len(views))
     views.insert(idx, view_config)
     return await set_dashboard_config(url_path, cfg, dry_run=dry_run)
 

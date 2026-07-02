@@ -335,6 +335,59 @@ async def test_view_as_numeric_string_is_index(fake_ws):
     assert saved["views"][1]["cards"][-1]["type"] == "x"
 
 
+async def test_card_index_as_numeric_string(fake_ws):
+    """card_index/position/new_index accept stringified numbers too."""
+    fake_ws.config_store[None] = {"views": [{"cards": [{"type": "a"}, {"type": "b"}]}]}
+    await lovelace.remove_card(None, view=0, card_index="0")
+    _, saved = fake_ws.saved[-1]
+    assert [c["type"] for c in saved["views"][0]["cards"]] == ["b"]
+
+
+async def test_position_and_new_index_as_numeric_strings(fake_ws):
+    fake_ws.config_store[None] = {"views": [{"cards": [{"type": "a"}, {"type": "b"}]}]}
+    await lovelace.add_card(None, view=0, card={"type": "x"}, position="1")
+    _, saved = fake_ws.saved[-1]
+    assert [c["type"] for c in saved["views"][0]["cards"]] == ["a", "x", "b"]
+
+    await lovelace.move_card(None, view=0, card_index="0", new_index="2")
+    _, saved = fake_ws.saved[-1]
+    assert [c["type"] for c in saved["views"][0]["cards"]] == ["x", "b", "a"]
+
+
+async def test_add_card_when_cards_is_null(fake_ws):
+    """A view with explicit cards: null must not crash the card ops."""
+    fake_ws.config_store[None] = {"views": [{"title": "Home", "cards": None}]}
+    await lovelace.add_card(None, view=0, card={"type": "markdown"})
+    _, saved = fake_ws.saved[-1]
+    assert saved["views"][0]["cards"] == [{"type": "markdown"}]
+
+
+async def test_summary_counts_section_cards(fake_ws):
+    fake_ws.config_store[None] = _sections_view_config()
+    result = await lovelace.add_card(
+        None, view=0, section=0, card={"type": "x"}, dry_run=True
+    )
+    # Section 0 had 2 cards, section 1 had 1 -> dry-run summary should reflect
+    # the added card in section 0 (3), not report 0 for the sections view.
+    assert result["summary"]["total_cards"] == 4
+    assert result["summary"]["cards_per_view"] == [4]
+
+
+async def test_save_error_not_misclassified_as_yaml(fake_ws, monkeypatch):
+    """A generic save failure must surface raw, not be relabeled YAML-mode."""
+    async def boom(message_type, **payload):
+        if message_type == "lovelace/config/save":
+            raise HassWebSocketError(
+                "WS request 'lovelace/config/save' failed: "
+                "{'code': 'unknown_error', 'message': 'boom'}"
+            )
+        return await FakeWS.__call__(fake_ws, message_type, **payload)
+
+    monkeypatch.setattr("app.lovelace.call_ws", boom)
+    with pytest.raises(HassWebSocketError, match="boom"):
+        await lovelace.set_dashboard_config(None, {"views": [{"cards": []}]})
+
+
 async def test_section_on_classic_view_is_rejected(fake_ws):
     """Passing section to a non-sections view is an error, not silently ignored."""
     fake_ws.config_store[None] = {"views": [{"title": "Home", "cards": []}]}
